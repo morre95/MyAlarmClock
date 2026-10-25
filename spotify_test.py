@@ -21,6 +21,21 @@ TESTA (ersätt namnet och länken):
   python spotify_test.py --device 'Min dator' --playlist 'https://open.spotify.com/playlist/DITT_ID'
   python spotify_test.py --device 'Min dator' --playlist 'https://open.spotify.com/playlist/DITT_ID' --delay 7200
 
+LARMLÄGE MED STOPP OCH SNOOZE:
+  python spotify_test.py --alarm --device 'Web Player (Chrome)' --playlist 'https://open.spotify.com/playlist/DITT_ID'
+  Skriv stop eller snooze och tryck Enter. Ctrl+C stänger också av larmet.
+  Standard: 9 minuters snooze, automatiskt stopp efter 30 minuter från
+  första bekräftade starten. Snooze ingår i dessa 30 minuter.
+  Ändra med --snooze-minutes 9 och --auto-stop-minutes 30.
+  Kort test: --snooze-minutes 0.1 --auto-stop-minutes 1
+  --delay och --fallback fungerar även här. MP3-reserven startas om från
+  början efter snooze. Spotify återupptar sin befintliga uppspelning.
+  stop under startfördröjningen avbryter starten; under snooze avbryts
+  återstarten. Stängd terminalindata avslutar också larmet med ett stoppförsök.
+  Håll terminalen och datorn igång. Processdöd eller strömavbrott kan hindra
+  automatisk avstängning. Spotify-anrop kan fördröja kommandon några sekunder.
+  Utan --alarm används det tidigare starttestet som lämnar musiken igång.
+
 DIAGNOSTIK (kör detta innan testet efter två timmars inaktivitet):
   python spotify_test.py --device 'Web Player (Chrome)' --playlist 'https://open.spotify.com/playlist/DITT_ID' --diagnose
   Lägg till | tee spotify-diagnostik.log för att spara utskriften.
@@ -44,8 +59,9 @@ VALFRI MP3-RESERV (spelas på datorn där skriptet körs):
 
 Kör första testet med hörbar men låg volym. Skriptet ändrar inte volymen.
 Datorn och spelaren måste vara vakna; håll terminalen öppen under väntan.
-Ctrl+C avbryter väntan/reservljudet. Spotify stoppas i Spotify-appen.
-Spotify fortsätter spela efter lyckat test. Annan uppspelning på samma konto
+Ctrl+C avbryter väntan/reservljudet; i --alarm pausas även Spotify.
+Spotify fortsätter spela efter lyckat starttest utan --alarm.
+Annan uppspelning på samma konto
 kan avbrytas när testet startar. Använd inte prototypen som enda väckarklocka.
 
 Token sparas privat intill skriptet i .spotify-test/token.json. Dela inte den
@@ -81,6 +97,13 @@ def delay_seconds(value):
     if not math.isfinite(seconds) or seconds < 0:
         raise argparse.ArgumentTypeError("Fördröjningen måste vara ett ändligt tal >= 0.")
     return seconds
+
+
+def positive_minutes(value):
+    minutes = float(value)
+    if minutes <= 0 or not math.isfinite(minutes * 60):
+        raise argparse.ArgumentTypeError("Tiden måste vara ett ändligt antal minuter > 0.")
+    return minutes
 
 
 def select_device(devices, target):
@@ -198,14 +221,19 @@ def main():
     modes.add_argument("--login", action="store_true")
     modes.add_argument("--list-devices", action="store_true")
     modes.add_argument("--test-fallback", action="store_true")
+    modes.add_argument("--alarm", action="store_true", help="Larmläge med stop, snooze och automatisk avstängning")
     parser.add_argument("--device", help="Exakt spelarnamn eller ID")
     parser.add_argument("--playlist", type=playlist_uri)
     parser.add_argument("--delay", type=delay_seconds, default=0, help="Sekunder före start")
     parser.add_argument("--diagnose", action="store_true", help="Logga uppspelningsstatus i 60 sekunder efter bekräftad start")
     parser.add_argument("--fallback", type=Path, help="Lokal reservfil, kräver mpv")
+    parser.add_argument("--snooze-minutes", type=positive_minutes, help="Snoozetid i minuter, endast --alarm (standard: 9)")
+    parser.add_argument("--auto-stop-minutes", type=positive_minutes, help="Total larmtid inklusive snooze, endast --alarm (standard: 30)")
     args = parser.parse_args()
-    if args.diagnose and (args.login or args.list_devices or args.test_fallback):
+    if args.diagnose and (args.login or args.list_devices or args.test_fallback or args.alarm):
         parser.error("--diagnose används med --device och --playlist, inte med andra testlägen.")
+    if not args.alarm and (args.snooze_minutes is not None or args.auto_stop_minutes is not None):
+        parser.error("--snooze-minutes och --auto-stop-minutes kräver --alarm.")
     if args.fallback:
         args.fallback = args.fallback.expanduser().resolve()
         if not args.fallback.is_file() or not shutil.which("mpv"):
@@ -224,7 +252,7 @@ def main():
         from spotipy.cache_handler import CacheFileHandler
     except ImportError:
         parser.error("Installera beroendet: python -m pip install 'spotipy==2.25.1'")
-    if args.diagnose:
+    if args.diagnose or args.alarm:
         # Spotipy kan annars logga råa API-fel och, vid DEBUG, auth-headers.
         # Våra egna loggrader ovan innehåller bara valda statusfält.
         for name in ("spotipy.client", "spotipy.oauth2", "spotipy.cache_handler"):
@@ -253,7 +281,7 @@ def main():
             return token if as_dict else token["access_token"]
 
     session = True
-    if args.diagnose:
+    if args.diagnose or args.alarm:
         from requests import Session
 
         # Requests standardsession gör inga automatiska återförsök. Spotipys
@@ -268,6 +296,21 @@ def main():
         if not devices:
             print("Inga spelare hittades. Öppna Spotify, spela något och pausa sedan.")
         return 0
+    if args.alarm:
+        from alarm_control import AlarmPlayback, SpotifyAlarmPlayer, TerminalCommands, run_alarm
+
+        commands = TerminalCommands(sys.stdin)
+
+        def spotify_player():
+            # Slå upp spelaren efter --delay; enhets-ID kan ändras under väntan.
+            device = select_device(sp.devices().get("devices", []), args.device)
+            return SpotifyAlarmPlayer(sp, device["id"], args.playlist)
+
+        return run_alarm(
+            AlarmPlayback(spotify_player, args.fallback), commands.read, delay=args.delay,
+            snooze_seconds=(args.snooze_minutes if args.snooze_minutes is not None else 9) * 60,
+            auto_stop_seconds=(args.auto_stop_minutes if args.auto_stop_minutes is not None else 30) * 60,
+        )
     print(f"Start om {args.delay:g} sekunder. Låt datorn vara vaken. Ctrl+C avbryter.", flush=True)
     deadline = time.monotonic() + args.delay
     while time.monotonic() < deadline:

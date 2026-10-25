@@ -250,5 +250,139 @@ class DiagnosticsTests(unittest.TestCase):
                          [0, 2, 4, 14])
 
 
+class AlarmCliTests(unittest.TestCase):
+    def test_invalid_alarm_flags_and_times_fail_before_authentication(self):
+        invalid = [
+            ["--alarm", "--diagnose"], ["--alarm", "--login"],
+            ["--alarm", "--list-devices"], ["--alarm", "--test-fallback"],
+            ["--auto-stop-minutes", "1"], ["--snooze-minutes", "1"],
+        ]
+        for option in ("--auto-stop-minutes", "--snooze-minutes"):
+            for value in ("0", "-1", "nan", "inf", "1e308", "text"):
+                invalid.append(["--alarm", option, value])
+        for arguments in invalid:
+            with self.subTest(arguments=arguments), \
+                    patch.object(app.sys, "argv", ["spotify_test.py", *arguments]), \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                app.main()
+            self.assertEqual(error.exception.code, 2)
+
+    def execute_alarm(self, commands, flags=(), fail_pause=False, fail_resume=False):
+        import alarm_control as alarm
+        import requests
+
+        clock, output, sent = Clock(), io.StringIO(), []
+        pending = list(commands)
+        state = playback(playing=False)
+
+        def read_command(timeout):
+            if pending and pending[0][0] <= clock.now + timeout:
+                when, command = pending.pop(0)
+                clock.now = max(clock.now, when)
+                return command
+            clock.sleep(timeout)
+            return None
+
+        def send(session, request, **kwargs):
+            sent.append((clock.now, request.method, request.url, request.body))
+            status, body = 200, state
+            if "/devices" in request.url:
+                body = {"devices": [DEVICE]}
+            elif request.method == "PUT":
+                status, body = 204, {}
+                if "/pause" in request.url:
+                    if fail_pause:
+                        status, body = 500, {"error": {"message": SECRET}}
+                    else:
+                        state["is_playing"] = False
+                else:
+                    if fail_resume and request.body is None:
+                        status, body = 503, {"error": {"message": SECRET}}
+                    else:
+                        state["is_playing"] = True
+            response = requests.Response()
+            response.status_code = status
+            response._content = json.dumps(body).encode()
+            response.url, response.request = request.url, request
+            return response
+
+        auth, cache = Mock(), Mock()
+        token = {"access_token": SECRET, "refresh_token": SECRET}
+        cache.get_cached_token.return_value = token
+        auth.validate_token.return_value = token
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            reserve = Path(directory) / "reserv.mp3"
+            reserve.touch()
+            arguments = [str(reserve) if flag == "RESERVE" else flag for flag in flags]
+            stack.enter_context(patch.object(app, "__file__", str(Path(directory) / "spotify_test.py")))
+            stack.enter_context(patch.object(app.sys, "argv", [
+                "spotify_test.py", "--alarm", "--device", DEVICE["name"],
+                "--playlist", URI, *arguments,
+            ]))
+            stack.enter_context(patch.dict(app.os.environ, {"SPOTIPY_CLIENT_ID": "test-client"}))
+            stack.enter_context(patch.object(app.os, "umask"))
+            stack.enter_context(patch("spotipy.oauth2.SpotifyPKCE", return_value=auth))
+            stack.enter_context(patch("spotipy.cache_handler.CacheFileHandler", return_value=cache))
+            stack.enter_context(patch.object(requests.Session, "send", send))
+            stack.enter_context(patch.object(app.shutil, "which", return_value="/usr/bin/mpv"))
+            stack.enter_context(patch.object(alarm, "TerminalCommands", return_value=Mock(read=read_command)))
+            stack.enter_context(patch.object(alarm.time, "monotonic", clock.monotonic))
+            stack.enter_context(patch.object(alarm.time, "sleep", clock.sleep))
+            reserve_player = stack.enter_context(patch.object(alarm, "Mp3AlarmPlayer"))
+            for name in ("spotipy.client", "spotipy.oauth2", "spotipy.cache_handler"):
+                logger = logging.getLogger(name)
+                stack.enter_context(patch.object(logger, "disabled", False))
+                stack.enter_context(patch.object(logger, "level", logging.DEBUG))
+            stack.enter_context(redirect_stdout(output))
+            stack.enter_context(redirect_stderr(output))
+            code = app.main()
+            reserve_player.assert_not_called()
+        self.assertNotIn(SECRET, output.getvalue())
+        return code, clock, state, sent, output.getvalue()
+
+    def test_cli_snooze_resumes_existing_queue_and_auto_stops_at_original_time(self):
+        code, clock, state, sent, _ = self.execute_alarm(
+            [(1, "snooze")], ["--snooze-minutes", "0.1", "--auto-stop-minutes", "0.2"])
+        self.assertEqual(code, 0)
+        self.assertEqual(clock.now, 12)
+        self.assertFalse(state["is_playing"])
+        starts = [(t, body) for t, method, url, body in sent if method == "PUT" and "/play?" in url]
+        self.assertEqual(starts, [(0, json.dumps({"context_uri": URI})), (7, None)])
+        pauses = [t for t, method, url, _ in sent if method == "PUT" and "/pause?" in url]
+        self.assertEqual(pauses, [1, 12])
+        self.assertTrue(all("device_id=chrome" in url for _, method, url, _ in sent if method == "PUT"))
+
+    def test_cli_defaults_and_stop_during_snooze(self):
+        code, clock, state, sent, output = self.execute_alarm([(1, "snooze"), (2, "stop")])
+        self.assertEqual(code, 0)
+        self.assertEqual(clock.now, 2)
+        self.assertFalse(state["is_playing"])
+        self.assertIn("30 minuter", output)
+        self.assertIn("Snooze i 9 minuter", output)
+        self.assertEqual(sum(method == "PUT" and "/play?" in url for _, method, url, _ in sent), 1)
+
+    def test_cli_stop_before_delay_sends_no_spotify_requests(self):
+        code, _, _, sent, _ = self.execute_alarm([(1, "stop")], ["--delay", "10"])
+        self.assertEqual(code, 0)
+        self.assertEqual(sent, [])
+
+    def test_cli_pause_error_is_not_reported_as_success_and_does_not_start_reserve(self):
+        code, _, _, _, output = self.execute_alarm(
+            [(1, "stop")], ["--fallback", "RESERVE"], fail_pause=True)
+        self.assertEqual(code, 1)
+        self.assertIn("HTTP 500", output)
+        self.assertIn("Kontrollera Spotify", output)
+        self.assertNotIn("Larmet är avstängt", output)
+
+    def test_cli_resume_failure_is_not_retried_or_replaced_with_reserve(self):
+        code, _, state, sent, output = self.execute_alarm(
+            [(1, "snooze")], ["--fallback", "RESERVE", "--snooze-minutes", "0.1"],
+            fail_resume=True)
+        self.assertEqual(code, 1)
+        self.assertFalse(state["is_playing"])
+        self.assertIn("HTTP 503", output)
+        self.assertEqual(sum(method == "PUT" and "/play?" in url for _, method, url, _ in sent), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
