@@ -34,6 +34,8 @@ LARMLÄGE MED STOPP OCH SNOOZE:
   återstarten. Stängd terminalindata avslutar också larmet med ett stoppförsök.
   Håll terminalen och datorn igång. Processdöd eller strömavbrott kan hindra
   automatisk avstängning. Spotify-anrop kan fördröja kommandon några sekunder.
+  Vid fel visas körfas och en fast felorsak. Om ett önskat tillstånd inte
+  bekräftas visar ALARM-raden vald status med bool/null, utan råa API-svar.
   Utan --alarm används det tidigare starttestet som lämnar musiken igång.
 
 DIAGNOSTIK (kör detta innan testet efter två timmars inaktivitet):
@@ -84,6 +86,8 @@ import subprocess
 import sys
 import time
 
+from alarm_control import AlarmError
+
 
 def playlist_uri(value):
     match = re.fullmatch(r"(?:spotify:playlist:|https://open\.spotify\.com/(?:intl-[a-z]+/)?playlist/)([A-Za-z0-9]+)(?:\?[^\s]*)?", value)
@@ -110,11 +114,13 @@ def select_device(devices, target):
     matches = [d for d in devices if d.get("id") == target]
     if not matches:
         matches = [d for d in devices if d.get("name") == target]
+    if not matches:
+        raise AlarmError("device_not_found")
     if len(matches) != 1:
-        raise RuntimeError("Spelaren saknas eller namnet är tvetydigt. Kör --list-devices och välj ID.")
+        raise AlarmError("device_ambiguous")
     device = matches[0]
     if not device.get("id") or device.get("is_restricted"):
-        raise RuntimeError("Spelaren kan inte styras via Spotify API.")
+        raise AlarmError("device_uncontrollable")
     return device
 
 
@@ -277,7 +283,7 @@ def main():
         def get_access_token(self, as_dict=False):
             token = auth.validate_token(cache.get_cached_token())
             if not token:
-                raise RuntimeError("Inloggningen behöver förnyas. Kör --login igen.")
+                raise AlarmError("login_required")
             return token if as_dict else token["access_token"]
 
     session = True

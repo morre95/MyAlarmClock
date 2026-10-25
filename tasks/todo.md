@@ -28,3 +28,21 @@ En mutationskontroll inverterade stopptidsjämförelsen i en tillfällig modul
 i minnet; beteendetestet upptäckte felet. Ingen källfil ändrades av kontrollen.
 `git diff --check` passerar. Ingen verklig musik, tokenfil eller befintlig
 diagnostiklogg användes i verifieringen. Manuellt ljudtest är nästa steg.
+
+## Felsökning efter manuellt startfel 2026-10-25
+
+- [x] Reproducerat samma generiska felutskrift offline för saknad/tvetydig/
+  begränsad spelare, ogiltig inloggning och utebliven startbekräftelse.
+- [x] Egna fel ger nu fasta orsaker och åtgärder. Råa undantagstexter
+  förblir dolda. Körfas och bool/null-status vid verifieringsfel visas.
+- [x] 47 tester passerar, inklusive sekretess vid felaktiga API-fält.
+  Oberoende granskning hittade inga obligatoriska ändringar.
+
+Verklig API-kontroll hittade webbspelaren. Ett sexsekunderstest fick
+startbekräftelse men användaren hörde inget ljud. Efter automatisk stopptid
+rapporterade API:t fortfarande playing=true; pausverifieringen gav korrekt
+fel. En ny paus följd av statusläsning bekräftade playing=false på målspelaren.
+Det ursprungliga startfelet kan inte fastställas från den gamla utskriften.
+Chrome-fliken är inte åtkomlig via tillgängliga webbläsarverktyg. Nästa steg
+är manuell uppspelning/paus i webbspelaren och nytt larmtest med förbättrad
+felrapportering. Inga tokens eller råa API-fel loggades vid felsökningen.

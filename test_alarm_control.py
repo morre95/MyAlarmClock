@@ -243,6 +243,19 @@ class PlaybackTests(unittest.TestCase):
         self.assertFalse(self.sp.state["is_playing"])
         self.assertEqual(self.sp.commands[-1], ("pause", {"device_id": "chrome"}))
 
+    def test_verification_diagnostics_never_print_raw_or_malformed_api_fields(self):
+        self.sp.state = {"device": "SECRET_TOKEN", "is_playing": "SECRET_TOKEN",
+                         "context": {"uri": "SECRET_TOKEN"}, "access_token": "SECRET_TOKEN"}
+        player = self.spotify_player()
+        with self.assertRaises(alarm.AlarmError) as error:
+            player.verify(True, "spotify:playlist:test")
+        alarm.report_error("Start misslyckades", error.exception)
+        output = self.output.getvalue()
+        self.assertNotIn("SECRET_TOKEN", output)
+        self.assertIn('"playing": null', output)
+        self.assertIn('"target_matches": false', output)
+        self.assertIn('"playlist_matches": false', output)
+
     def test_mp3_snooze_releases_process_and_resume_starts_new_owned_process(self):
         first, second = Mock(), Mock()
         for process in (first, second):

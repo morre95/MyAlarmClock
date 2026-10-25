@@ -1,8 +1,10 @@
 # Förslag: stopp, snooze och automatisk stopptid
 
 Status: beteendet godkänt av användaren 2026-10-25; implementerat och
-verifierat offline med 43 tester. Verklig Spotify-/MP3-uppspelning återstår
-att kontrollera manuellt.
+verifierat offline med 47 tester. Ett verkligt Spotify-test bekräftade start
+via API men gav inget hörbart ljud enligt användaren. Första pausförsöket
+kunde inte bekräftas; ett nytt pauskommando gav bekräftad paus. Hörbar
+Spotify-/MP3-uppspelning och den ursprungliga startorsaken återstår att kontrollera.
 
 ## Mål och omfattning
 

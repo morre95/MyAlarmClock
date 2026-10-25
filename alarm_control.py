@@ -6,6 +6,7 @@ Kommandoläsaren tar en timeout i sekunder och returnerar en rad eller None.
 EOFError betyder stängd indata. Ingen timer lever vidare efter run_alarm().
 """
 
+import json
 import os
 import select
 import subprocess
@@ -13,11 +14,30 @@ import sys
 import time
 
 
+ERROR_MESSAGES = {
+    "device_not_found": "Den valda spelaren finns inte i Spotifys enhetslista. Spela något manuellt i webbspelaren, pausa och kör --list-devices.",
+    "device_ambiguous": "Flera spelare har samma namn. Kör --list-devices och välj ett exakt ID med --device.",
+    "device_uncontrollable": "Den valda spelaren saknar ID eller tillåter inte API-styrning. Kör --list-devices och välj en styrbar spelare.",
+    "login_required": "Inloggningen behöver förnyas. Kör --login igen.",
+    "playback_unconfirmed": "Spotify bekräftade inte önskat uppspelningstillstånd inom 5 sekunder. Se ALARM-raden för senast lästa status.",
+}
+
+
+class AlarmError(RuntimeError):
+    """Eget fel med fast, tillåten förklaring; ingen text från Spotify."""
+
+    def __init__(self, code):
+        super().__init__(ERROR_MESSAGES[code])
+        self.code = code
+
+
 def report_error(message, exc):
     """Skriv bara vald felmetadata, aldrig undantagstext eller API-svar."""
     status = getattr(exc, "http_status", None)
     status = status if isinstance(status, int) else "-"
     print(f"{message} ({type(exc).__name__}, HTTP {status}).", file=sys.stderr, flush=True)
+    if isinstance(exc, AlarmError):
+        print(f"Orsak [{exc.code}]: {ERROR_MESSAGES[exc.code]}", file=sys.stderr, flush=True)
 
 
 class SpotifyAlarmPlayer:
@@ -38,11 +58,24 @@ class SpotifyAlarmPlayer:
 
     def verify(self, playing, uri=None):
         deadline = time.monotonic() + 5
+        state = None
         while time.monotonic() < deadline:
-            if self.matches(self.sp.current_playback(), playing, uri):
+            state = self.sp.current_playback()
+            if self.matches(state, playing, uri):
                 return
             time.sleep(min(0.25, max(0, deadline - time.monotonic())))
-        raise RuntimeError("Kunde inte bekräfta spelarens tillstånd.")
+        # Endast bool/null, inga namn, URI:er, tokens eller råa API-svar.
+        state = state if isinstance(state, dict) else {}
+        device, context = state.get("device"), state.get("context")
+        print("ALARM " + json.dumps({
+            "event": "verification_timeout", "expected_playing": playing,
+            "playback_available": bool(state),
+            "target_matches": isinstance(device, dict) and device.get("id") == self.device_id,
+            "playing": state.get("is_playing") if type(state.get("is_playing")) is bool else None,
+            "playlist_matches": (isinstance(context, dict) and context.get("uri") == uri)
+                                if uri is not None else None,
+        }), file=sys.stderr, flush=True)
+        raise AlarmError("playback_unconfirmed")
 
     def start(self):
         # Ett avbrutet/tidsöverskridet anrop kan ändå ha nått Spotify.
@@ -195,6 +228,7 @@ def run_alarm(player, read_command, *, delay=0, snooze_seconds=540, auto_stop_se
     snooze_deadline = None
     attempted_start = False
     result = 0
+    phase = "start"
     print(f"Larmstart om {delay:g} sekunder. Skriv stop eller snooze och tryck Enter. "
           "Ctrl+C stänger av larmet.", flush=True)
     try:
@@ -205,6 +239,7 @@ def run_alarm(player, read_command, *, delay=0, snooze_seconds=540, auto_stop_se
                 print("Automatisk stopptid nådd.", flush=True)
                 break
             if not attempted_start and now >= start_deadline:
+                phase = "start"
                 attempted_start = True  # Städa även en delvis lyckad start.
                 player.start()
                 player.check()
@@ -213,8 +248,10 @@ def run_alarm(player, read_command, *, delay=0, snooze_seconds=540, auto_stop_se
                       f"{auto_stop_seconds / 60:g} minuter, inklusive snooze.", flush=True)
                 continue
             if attempted_start and snooze_deadline is None:
+                phase = "övervakning"
                 player.check()
             if snooze_deadline is not None and now >= snooze_deadline:
+                phase = "återstart efter snooze"
                 snooze_deadline = None
                 player.resume()
                 player.check()
@@ -224,6 +261,7 @@ def run_alarm(player, read_command, *, delay=0, snooze_seconds=540, auto_stop_se
             next_deadline = stop_deadline if attempted_start else start_deadline
             if snooze_deadline is not None:
                 next_deadline = min(next_deadline, snooze_deadline)
+            phase = "kommandoläsning"
             command = read_command(min(1, max(0, next_deadline - time.monotonic())))
             if command is None:
                 continue
@@ -234,6 +272,7 @@ def run_alarm(player, read_command, *, delay=0, snooze_seconds=540, auto_stop_se
                 if not attempted_start:
                     print("Larmet har inte startat; snooze ändrar inte starttiden.", flush=True)
                 else:
+                    phase = "paus för snooze"
                     player.pause()
                     snooze_deadline = time.monotonic() + snooze_seconds
                     print(f"Snooze i {snooze_seconds / 60:g} minuter. "
@@ -246,7 +285,7 @@ def run_alarm(player, read_command, *, delay=0, snooze_seconds=540, auto_stop_se
         print("\nAvbryter larmet.", flush=True)
         result = 130
     except Exception as exc:
-        report_error("Larmstyrningen misslyckades", exc)
+        report_error(f"Larmstyrningen misslyckades under {phase}", exc)
         result = 1
     finally:
         try:

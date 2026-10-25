@@ -267,7 +267,8 @@ class AlarmCliTests(unittest.TestCase):
                 app.main()
             self.assertEqual(error.exception.code, 2)
 
-    def execute_alarm(self, commands, flags=(), fail_pause=False, fail_resume=False):
+    def execute_alarm(self, commands, flags=(), fail_pause=False, fail_resume=False,
+                      devices=None, confirm_start=True, valid_login=True):
         import alarm_control as alarm
         import requests
 
@@ -287,7 +288,7 @@ class AlarmCliTests(unittest.TestCase):
             sent.append((clock.now, request.method, request.url, request.body))
             status, body = 200, state
             if "/devices" in request.url:
-                body = {"devices": [DEVICE]}
+                body = {"devices": [DEVICE] if devices is None else devices}
             elif request.method == "PUT":
                 status, body = 204, {}
                 if "/pause" in request.url:
@@ -299,7 +300,7 @@ class AlarmCliTests(unittest.TestCase):
                     if fail_resume and request.body is None:
                         status, body = 503, {"error": {"message": SECRET}}
                     else:
-                        state["is_playing"] = True
+                        state["is_playing"] = confirm_start
             response = requests.Response()
             response.status_code = status
             response._content = json.dumps(body).encode()
@@ -309,7 +310,7 @@ class AlarmCliTests(unittest.TestCase):
         auth, cache = Mock(), Mock()
         token = {"access_token": SECRET, "refresh_token": SECRET}
         cache.get_cached_token.return_value = token
-        auth.validate_token.return_value = token
+        auth.validate_token.return_value = token if valid_login else None
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             reserve = Path(directory) / "reserv.mp3"
             reserve.touch()
@@ -339,6 +340,38 @@ class AlarmCliTests(unittest.TestCase):
             reserve_player.assert_not_called()
         self.assertNotIn(SECRET, output.getvalue())
         return code, clock, state, sent, output.getvalue()
+
+    def test_cli_device_selection_failure_explains_reason_without_sending_start(self):
+        cases = [([], "device_not_found"), ([DEVICE, DEVICE], "device_ambiguous"),
+                 ([{**DEVICE, "is_restricted": True}], "device_uncontrollable")]
+        for devices, reason in cases:
+            with self.subTest(reason=reason):
+                code, _, _, sent, output = self.execute_alarm([], devices=devices)
+                self.assertEqual(code, 1)
+                self.assertIn(reason, output)
+                self.assertIn("--list-devices", output)
+                self.assertFalse(any(method == "PUT" for _, method, _, _ in sent))
+
+    def test_cli_unconfirmed_start_logs_only_selected_state_and_still_cleans_up(self):
+        code, clock, state, sent, output = self.execute_alarm([], confirm_start=False)
+        self.assertEqual(code, 1)
+        self.assertEqual(clock.now, 5)
+        self.assertIn("playback_unconfirmed", output)
+        self.assertIn("start", output)
+        records = [json.loads(line[6:]) for line in output.splitlines()
+                   if line.startswith("ALARM ")]
+        self.assertEqual(records, [{"event": "verification_timeout", "expected_playing": True,
+                                   "playback_available": True, "target_matches": True,
+                                   "playing": False, "playlist_matches": True}])
+        self.assertFalse(state["is_playing"])
+        self.assertEqual(sum(method == "PUT" for _, method, _, _ in sent), 1)
+
+    def test_cli_invalid_cached_login_explains_how_to_renew_without_network_request(self):
+        code, _, _, sent, output = self.execute_alarm([], valid_login=False)
+        self.assertEqual(code, 1)
+        self.assertIn("login_required", output)
+        self.assertIn("--login", output)
+        self.assertEqual(sent, [])
 
     def test_cli_snooze_resumes_existing_queue_and_auto_stops_at_original_time(self):
         code, clock, state, sent, _ = self.execute_alarm(
