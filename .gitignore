@@ -1,0 +1,4 @@
+.spotify-test/
+spotify-diagnostik.log
+__pycache__/
+.venv
