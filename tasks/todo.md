@@ -27,7 +27,7 @@ med fallerande tester och rättades. Inga kvarvarande obligatoriska fynd.
 En mutationskontroll inverterade stopptidsjämförelsen i en tillfällig modul
 i minnet; beteendetestet upptäckte felet. Ingen källfil ändrades av kontrollen.
 `git diff --check` passerar. Ingen verklig musik, tokenfil eller befintlig
-diagnostiklogg användes i verifieringen. Manuellt ljudtest är nästa steg.
+diagnostiklogg användes i verifieringen. Vid den kontrollen återstod manuellt ljudtest.
 
 ## Felsökning efter manuellt startfel 2026-10-25
 
@@ -43,6 +43,20 @@ startbekräftelse men användaren hörde inget ljud. Efter automatisk stopptid
 rapporterade API:t fortfarande playing=true; pausverifieringen gav korrekt
 fel. En ny paus följd av statusläsning bekräftade playing=false på målspelaren.
 Det ursprungliga startfelet kan inte fastställas från den gamla utskriften.
-Chrome-fliken är inte åtkomlig via tillgängliga webbläsarverktyg. Nästa steg
-är manuell uppspelning/paus i webbspelaren och nytt larmtest med förbättrad
-felrapportering. Inga tokens eller råa API-fel loggades vid felsökningen.
+Chrome-fliken var inte åtkomlig via tillgängliga webbläsarverktyg. Inga tokens
+eller råa API-fel loggades vid felsökningen. Senare manuella resultat finns nedan.
+
+## Senare manuella Spotify-tester och handoff
+
+- [x] Användaren bekräftar hörbar start och stopp med `stop`.
+- [x] Användaren bekräftar snooze i 6 sekunder, återupptaget ljud och
+  automatisk avstängning efter 1 minut inklusive snooze.
+- [x] Användaren bekräftar start, snooze och automatisk avstängning efter
+  `--delay 7200`, med datorn vaken och Chrome/webbspelaren öppen.
+- [x] Nuläge och fortsättning sparade i `HANDOFF.md`.
+- [ ] Nästa steg: manuellt MP3-test vid avsiktligt Spotify-startfel,
+  inklusive stopp, snooze och automatisk avstängning.
+- [ ] Efter MP3-verifiering: specificera lokal webbapp och Raspberry Pi-körning.
+
+De lyckade Spotify-testerna fastställer inte orsaken till de tidigare
+sporadiska felen och verifierar inte drift efter viloläge eller omstart.

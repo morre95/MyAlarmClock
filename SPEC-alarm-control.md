@@ -1,10 +1,11 @@
 # Förslag: stopp, snooze och automatisk stopptid
 
 Status: beteendet godkänt av användaren 2026-10-25; implementerat och
-verifierat offline med 47 tester. Ett verkligt Spotify-test bekräftade start
-via API men gav inget hörbart ljud enligt användaren. Första pausförsöket
-kunde inte bekräftas; ett nytt pauskommando gav bekräftad paus. Hörbar
-Spotify-/MP3-uppspelning och den ursprungliga startorsaken återstår att kontrollera.
+verifierat offline med 47 tester. Användaren har därefter verifierat hörbar
+Spotify-start, stopp, snooze och automatisk avstängning, även start/snooze/
+automatisk avstängning efter två timmars inaktivitet med datorn vaken och
+Chrome öppet. Manuellt MP3-test återstår. Orsaken till tidigare sporadiska
+start-/ljudproblem är inte fastställd. Fortsättning finns i `HANDOFF.md`.
 
 ## Mål och omfattning
 
